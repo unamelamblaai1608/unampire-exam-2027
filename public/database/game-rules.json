@@ -1,0 +1,44 @@
+{
+  "playersPerGame": 10,
+  "reinforcementsPerCountry": 2,
+  "minimumTroopsPerTerritory": 1,
+  "populationTiers": [
+    {
+      "max": 5000000,
+      "troops": 1
+    },
+    {
+      "max": 10000000,
+      "troops": 2
+    },
+    {
+      "max": 25000000,
+      "troops": 3
+    },
+    {
+      "max": 50000000,
+      "troops": 4
+    },
+    {
+      "max": 75000000,
+      "troops": 5
+    },
+    {
+      "max": 100000000,
+      "troops": 6
+    },
+    {
+      "max": 125000000,
+      "troops": 7
+    },
+    {
+      "max": 150000000,
+      "troops": 8
+    },
+    {
+      "max": null,
+      "troops": 9
+    }
+  ],
+  "combat": "Pairwise dice comparison; higher die wins; ties cause no loss."
+}

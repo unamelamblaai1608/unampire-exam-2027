@@ -1,0 +1,250 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import countryData from "../../../public/database/countries.json";
+import SiteHeader from "../../components/SiteHeader";
+import WorldMap from "../../components/WorldMap";
+
+type Country = { name: string; population: number; owner: string; troops: number; originalTroops: number; alive: boolean };
+type LogItem = { id: number; title: string; detail: string; kind: "system" | "battle" | "npc" | "good" };
+type Game = { playerCountry: string; countries: Country[]; turnOrder: string[]; turnIndex: number; round: number; log: LogItem[]; winner: string | null; nextLogId: number };
+const palette = ["#D5AE62","#5D9EBD","#A77BC6","#6EA88C","#D17E6D","#8D9BCB","#B7A36C","#68AEB0","#C17EAA","#9AAB74"];
+const populationTroops = (p:number) => p <= 5_000_000 ? 1 : p <= 10_000_000 ? 2 : p <= 25_000_000 ? 3 : p <= 50_000_000 ? 4 : p <= 75_000_000 ? 5 : p <= 100_000_000 ? 6 : p <= 125_000_000 ? 7 : p <= 150_000_000 ? 8 : 9;
+const fmt = (n:number) => new Intl.NumberFormat("en-US").format(n);
+const sample = <T,>(arr:T[], n:number) => [...arr].sort(()=>Math.random()-.5).slice(0,n);
+const idFor = (s:string) => s.toLowerCase().replace(/[^a-z]/g,"");
+
+export default function Home() {
+  const [selected,setSelected]=useState("South Africa");
+  const [game,setGame]=useState<Game|null>(null);
+  const [target,setTarget]=useState("");
+  const [committed,setCommitted]=useState(1);
+  const [transfer,setTransfer]=useState(1);
+  const [allocations,setAllocations]=useState<Record<string,number>>({});
+  const [battle,setBattle]=useState<{attacker:string;defender:string;committed:number}|null>(null);
+  const [speed,setSpeed]=useState(false);
+  const [notice,setNotice]=useState("");
+  const [saved,setSaved]=useState(false);
+
+  useEffect(()=>{try{const raw=localStorage.getItem("unampire-save");if(raw){setGame(JSON.parse(raw));setSaved(true)}}catch{}},[]);
+  useEffect(()=>{if(game) localStorage.setItem("unampire-save",JSON.stringify(game));},[game]);
+
+  const currentName=game?.turnOrder[game.turnIndex] ?? "";
+  const isPlayerTurn=!!game && currentName===game.playerCountry && !game.winner;
+  const owned=useMemo(()=>game?.countries.filter(c=>c.owner===game.playerCountry)??[],[game]);
+  const activeCountries=game?.countries.filter(c=>c.alive)??[];
+  const playerAlive=owned.length>0;
+
+  function pushLog(g:Game,title:string,detail:string,kind:LogItem["kind"]="system") {
+    g.log=[{id:g.nextLogId++,title,detail,kind},...g.log].slice(0,80);
+  }
+  function startGame() {
+    const chosen=countryData.find(c=>c.name===selected) ?? countryData[0];
+    const others=sample(countryData.filter(c=>c.name!==chosen.name),9);
+    const selectedCountries=[chosen,...others];
+    const turnOrder=selectedCountries.map(c=>c.name).sort(()=>Math.random()-.5);
+    const list:Country[]=selectedCountries.map((c,i)=>({name:c.name,population:c.population,owner:c.name,troops:populationTroops(c.population),originalTroops:populationTroops(c.population),alive:true}));
+    const g:Game={playerCountry:chosen.name,countries:list,turnOrder,turnIndex:0,round:1,log:[],winner:null,nextLogId:1};
+    pushLog(g,"NEW CAMPAIGN","Ten nations enter the world theatre. The first commander has been selected at random.");
+    pushLog(g,"YOUR NATION",`${chosen.name} begins with ${populationTroops(chosen.population)} troop(s). Your objective is to control all ten nations.`,"good");
+    const first=turnOrder[0]; pushLog(g,"FIRST TURN",`${first} has been randomly selected to act first.`);
+    setGame(g);setBattle(null);setTarget("");setNotice("Campaign created. Check the turn order to see who moves first.");
+  }
+  function updateCountry(g:Game,name:string,patch:Partial<Country>) {
+    g.countries=g.countries.map(c=>c.name===name?{...c,...patch}:c);
+  }
+  function nextTurn(g:Game) {
+    if(g.winner)return;
+    let idx=(g.turnIndex+1)%g.turnOrder.length;
+    let round=g.round+(idx===0?1:0);
+    let tries=0;
+    while(tries<g.turnOrder.length && !g.countries.some(c=>c.owner===g.turnOrder[idx]&&c.alive)){idx=(idx+1)%g.turnOrder.length;tries++;}
+    g.turnIndex=idx;g.round=round;
+    const name=g.turnOrder[idx];
+    if(round>=2 && g.countries.some(c=>c.owner===name&&c.alive)){
+      const bonus=g.countries.filter(c=>c.owner===name&&c.alive).length*2;
+      pushLog(g,"REINFORCEMENTS",`${name} receives ${bonus} troops (${g.countries.filter(c=>c.owner===name&&c.alive).length} territories × 2).`,"good");
+      if(name===g.playerCountry) setAllocations({});
+      else {
+        let remaining=bonus;
+        const ownedNow=g.countries.filter(c=>c.owner===name&&c.alive).sort((a,b)=>a.troops-b.troops);
+        for(const c of ownedNow){if(!remaining)break;const add=Math.min(remaining,Math.max(1,Math.ceil(bonus/ownedNow.length)));updateCountry(g,c.name,{troops:c.troops+add});remaining-=add;}
+        if(remaining&&ownedNow.length)updateCountry(g,ownedNow[0].name,{troops:ownedNow[0].troops+remaining});
+      }
+    }
+    pushLog(g,"TURN BEGINS",`${name} is now active.`,name===g.playerCountry?"good":"npc");
+  }
+  function finishPlayerTurn() {
+    if(!game||!isPlayerTurn)return;
+    const g=structuredClone(game) as Game;
+    const total=Object.values(allocations).reduce((a,b)=>a+b,0);
+    const due=g.round>=2?owned.length*2:0;
+    if(total>due){setNotice(`You have allocated ${total}, but only ${due} reinforcement troops are available.`);return;}
+    if(due>0 && total<due){setNotice(`Allocate all ${due} reinforcement troops before ending your turn.`);return;}
+    Object.entries(allocations).forEach(([name,n])=>{const c=g.countries.find(x=>x.name===name);if(c&&n>0)updateCountry(g,name,{troops:c.troops+n});});
+    pushLog(g,"PLAYER TURN ENDED",`${g.playerCountry} has completed its turn.`);nextTurn(g);setGame(g);setTarget("");setNotice("");
+  }
+  function resolveVolley() {
+    if(!game||!battle)return;
+    const g=structuredClone(game) as Game;
+    let a=g.countries.find(c=>c.name===battle.attacker)!;
+    let d=g.countries.find(c=>c.name===battle.defender)!;
+    const attackDice=Math.min(battle.committed,a.troops-1);
+    const defendDice=Math.min(d.troops,3);
+    const ad=Array.from({length:attackDice},()=>1+Math.floor(Math.random()*6)).sort((x,y)=>y-x);
+    const dd=Array.from({length:defendDice},()=>1+Math.floor(Math.random()*6)).sort((x,y)=>y-x);
+    let al=0,dl=0;const pairs=[];
+    for(let i=0;i<Math.min(ad.length,dd.length);i++){if(ad[i]>dd[i]){dl++;pairs.push(`Attacker ${ad[i]} beats defender ${dd[i]}.`)}else if(ad[i]<dd[i]){al++;pairs.push(`Defender ${dd[i]} beats attacker ${ad[i]}.`)}else pairs.push(`Both roll ${ad[i]}: tie, no loss.`);}
+    a={...a,troops:a.troops-al};d={...d,troops:d.troops-dl};
+    updateCountry(g,a.name,{troops:a.troops});updateCountry(g,d.name,{troops:d.troops});
+    pushLog(g,"BATTLE VOLLEY",`${a.name} rolls [${ad.join(", ")}] against ${d.name} [${dd.join(", ")}]. ${pairs.join(" ")}`, "battle");
+    if(d.troops<=0){
+      const bonus=Math.max(2,Math.floor(d.originalTroops/2));
+      updateCountry(g,d.name,{owner:a.owner,troops:0,alive:true});
+      const attackerNow=g.countries.find(c=>c.name===a.name)!;
+      const available=Math.max(0,attackerNow.troops-1);
+      setBattle({attacker:a.name,defender:d.name,committed:Math.min(available,Math.max(1,bonus))});
+      pushLog(g,"TERRITORY CONQUERED",`${a.name} captures ${d.name}. Conquest bonus: ${bonus} troops. Choose how many troops to move into the new territory.`, "good");
+      setTransfer(Math.min(available,Math.max(1,bonus)));
+      setNotice(`Conquest! Choose troops to move into ${d.name}. The conquest bonus is ${bonus}.`);
+      setGame(g);return;
+    }
+    if(a.troops<=1){
+      pushLog(g,"ATTACK ENDED",`${a.name} has only one troop remaining and cannot continue.`);
+      setBattle(null);setTarget("");setGame(g);return;
+    }
+    setBattle({...battle,committed:Math.min(battle.committed,a.troops-1)});
+    setGame(g);setNotice("Volley resolved. Continue the attack or stop here.");
+  }
+  function stopAttack() {
+    if(!battle||!game)return;
+    const g=structuredClone(game) as Game;
+    pushLog(g,"ATTACK STOPPED",`${battle.attacker} stops attacking ${battle.defender}.`);
+    setBattle(null);setTarget("");setGame(g);setNotice("Attack stopped. You may end your turn or transfer troops.");
+  }
+  function completeConquest() {
+    if(!game||!battle)return;
+    const g=structuredClone(game) as Game;
+    const a=g.countries.find(c=>c.name===battle.attacker)!;
+    const d=g.countries.find(c=>c.name===battle.defender)!;
+    const bonus=Math.max(2,Math.floor(d.originalTroops/2));
+    const move=Math.min(transfer,Math.max(0,a.troops-1),bonus);
+    updateCountry(g,a.name,{troops:a.troops-move});
+    updateCountry(g,d.name,{owner:a.owner,troops:Math.max(1,move),alive:true});
+    pushLog(g,"CONQUEST SECURED",`${move} troops move from ${a.name} into ${d.name}. ${a.owner} now controls ${g.countries.filter(c=>c.owner===a.owner).length} territories.`,"good");
+    setBattle(null);setTarget("");setGame(g);setNotice("Territory secured. You can end your turn when ready.");
+    const owners=[...new Set(g.countries.map(c=>c.owner))];
+    if(owners.length===1){g.winner=owners[0];pushLog(g,"VICTORY",`${owners[0]} controls the entire world theatre!`,"good");setGame(g);}
+  }
+  function playerAttack() {
+    if(!game||!target||!isPlayerTurn)return;
+    const from=game.countries.find(c=>c.owner===game.playerCountry&&c.troops>=2);
+    const defender=game.countries.find(c=>c.name===target);
+    if(!from||!defender)return;
+    setBattle({attacker:from.name,defender:target,committed:Math.min(from.troops-1,3)});
+    setNotice(`Attack initiated from ${from.name} against ${target}.`);
+    const g=structuredClone(game) as Game;pushLog(g,"ATTACK DECLARED",`${from.name} launches an attack on ${target}.`,"battle");setGame(g);
+  }
+  function npcTurn(g:Game) {
+    const npc=g.turnOrder[g.turnIndex];
+    const holdings=g.countries.filter(c=>c.owner===npc&&c.alive);
+    const enemies=g.countries.filter(c=>c.owner!==npc&&c.alive);
+    if(!holdings.length||!enemies.length){nextTurn(g);return;}
+    const strongest=[...holdings].sort((a,b)=>b.troops-a.troops)[0];
+    const weakest=[...enemies].sort((a,b)=>a.troops-b.troops)[0];
+    if(strongest.troops>=weakest.troops+2){
+      const loss=Math.min(weakest.troops,strongest.troops-1);
+      updateCountry(g,strongest.name,{troops:strongest.troops-loss});
+      const conquered=strongest.troops-loss>0 && Math.random()>.2;
+      if(conquered){
+        const bonus=Math.max(2,Math.floor(weakest.originalTroops/2));
+        const newTroops=Math.max(1,Math.min(bonus,loss));
+        updateCountry(g,weakest.name,{owner:npc,troops:newTroops});
+        pushLog(g,"NPC CONQUEST",`${npc} targets the weaker ${weakest.name} with its strongest territory, ${strongest.name}. The prototype's strategic simulation awards the territory and moves ${newTroops} troops.`, "npc");
+      } else {
+        updateCountry(g,weakest.name,{troops:Math.max(1,weakest.troops-1)});
+        pushLog(g,"NPC ATTACK",`${npc} probes ${weakest.name} from ${strongest.name}, but the attack does not secure the territory.`, "npc");
+      }
+    } else {
+      const weakestOwn=[...holdings].sort((a,b)=>a.troops-b.troops)[0];
+      updateCountry(g,weakestOwn.name,{troops:weakestOwn.troops+1});
+      pushLog(g,"NPC DECISION",`${npc} avoids an unfavourable attack and reinforces ${weakestOwn.name} instead.`, "npc");
+    }
+    const aliveOwners=[...new Set(g.countries.filter(c=>c.alive).map(c=>c.owner))];
+    if(aliveOwners.length===1){g.winner=aliveOwners[0];pushLog(g,"VICTORY",`${g.winner} controls all ten nations.`,"good");}
+    else nextTurn(g);
+  }
+  function advanceNpc() {
+    if(!game||isPlayerTurn||game.winner)return;
+    const g=structuredClone(game) as Game;npcTurn(g);setGame(g);
+  }
+  function fastForward() {
+    if(!game||game.winner)return;
+    const g=structuredClone(game) as Game;let steps=0;
+    while(g.turnOrder[g.turnIndex]!==g.playerCountry&&!g.winner&&steps<20){npcTurn(g);steps++;}
+    setGame(g);setSpeed(false);setNotice(`Fast-forward complete: ${steps} NPC turn(s) simulated. Every decision is recorded in the activity feed.`);
+  }
+  function transferTroops(from:string,to:string,amount:number) {
+    if(!game||!isPlayerTurn)return;
+    const g=structuredClone(game) as Game;
+    const a=g.countries.find(c=>c.name===from)!;const b=g.countries.find(c=>c.name===to)!;
+    if(a.owner!==game.playerCountry||b.owner!==game.playerCountry||a.name===b.name||amount<1||a.troops-amount<1){setNotice("Transfer not possible. Both countries must be yours and the source must keep at least one troop.");return;}
+    updateCountry(g,a.name,{troops:a.troops-amount});updateCountry(g,b.name,{troops:b.troops+amount});
+    pushLog(g,"TROOPS TRANSFERRED",`${amount} troops move from ${from} to ${to}.`,"good");setGame(g);setNotice("Troop transfer completed.");
+  }
+  function reset() {if(confirm("Delete this saved campaign and return to the title screen?")){localStorage.removeItem("unampire-save");setGame(null);setBattle(null);setNotice("");setSaved(false);}}
+  const currentTroops=game?.countries.find(c=>c.name===currentName)?.troops??0;
+  const reinforcementDue=game&&isPlayerTurn&&game.round>=2?owned.length*2:0;
+  const totalAllocated=Object.values(allocations).reduce((a,b)=>a+b,0);
+
+  return <main className="app-shell">
+    <SiteHeader />
+    {!game ? <section className="landing">
+        <div className="hero-text">
+      <div className="eyebrow">A GEOPOLITICAL STRATEGY EXPERIENCE</div>
+      <h1>ONE WORLD.<br/><em>TEN NATIONS.</em><br/>ONE EMPIRE.</h1>
+      <p className="lead">Choose your nation. Build your forces. Outthink nine rival powers and bring the world under one banner.</p></div>
+      <div className="start-layout">
+        <div className="map-panel" id="world"><div className="panel-head"><div><small>THE WORLD THEATRE</small><h2>Choose your starting nation</h2></div><span className="live-tag">{countryData.length} NATIONS</span></div><WorldMap countries={countryData} selected={selected} onPick={setSelected}/><p className="map-hint">Select a highlighted nation on the map or use the list to begin.</p></div>
+        <div className="setup-panel">
+          <label htmlFor="country">YOUR NATION</label>
+          <select id="country" value={selected} onChange={e=>setSelected(e.target.value)}>{countryData.map(c=><option key={c.name} value={c.name}>{c.name}</option>)}</select>
+          <div className="nation-preview"><div className="crest">✦</div><div><small>SELECTED NATION</small><h3>{selected}</h3><p>{fmt(countryData.find(c=>c.name===selected)?.population??0)} population</p></div></div>
+          <div className="rule-line"><span>Starting troops</span><b>{populationTroops(countryData.find(c=>c.name===selected)?.population??0)}</b></div>
+          <div className="rule-line"><span>Opposing nations</span><b>9</b></div>
+          <div className="rule-line"><span>Victory condition</span><b>10 / 10</b></div>
+          <button className="primary-btn" onClick={startGame}>ESTABLISH CAMPAIGN <span>↗</span></button>
+          {saved&&<button className="secondary-btn" onClick={()=>setNotice("Your previous campaign is saved in this browser. Start a new campaign to replace it.")}>Previous local save detected</button>}
+          <p className="fine-print">A new campaign replaces the current browser save.</p>
+        </div>
+      </div>
+      <div className="landing-foot"><span>UNAMPIRE · COMMAND YOUR DESTINY</span><span>DESIGNED FOR STRATEGIC THINKING</span></div>
+    </section> : <section className="game-screen">
+      <div className="game-heading"><div><div className="eyebrow">CAMPAIGN IN PROGRESS · ROUND {game.round}</div><h1>WORLD <em>COMMAND</em></h1><p>Lead {game.playerCountry}. Expand your influence across the theatre.</p></div><button className="secondary-btn reset-btn" onClick={reset}>RESET CAMPAIGN</button></div>
+      <div className="metrics">
+        <div><small>YOUR TERRITORIES</small><b>{owned.length}<span>/10</span></b></div>
+        <div><small>YOUR TROOPS</small><b>{owned.reduce((s,c)=>s+c.troops,0)}</b></div>
+        <div><small>ACTIVE NATIONS</small><b>{new Set(activeCountries.map(c=>c.owner)).size}<span>/10</span></b></div>
+        <div><small>ROUND</small><b>{game.round.toString().padStart(2,"0")}</b></div>
+      </div>
+      <div className="game-grid">
+        <div className="main-column">
+          <div className="panel map-game" id="world"><div className="panel-head"><div><small>LIVE THEATRE</small><h2>Territory control map</h2></div><span className="live-tag">● LIVE CAMPAIGN</span></div><WorldMap countries={game.countries} ownerOrder={game.turnOrder}/><div className="legend">{game.turnOrder.map((n,i)=><span key={n}><i style={{background:palette[i%palette.length]}}/>{n}</span>)}</div></div>
+          <div className="panel" id="command"><div className="panel-head"><div><small>YOUR COMMAND</small><h2>{game.winner?"Campaign concluded":isPlayerTurn?"Your turn":`${currentName}'s turn`}</h2></div><span className={`turn-chip ${isPlayerTurn?"your-turn":""}`}>{game.winner?"FINISHED":isPlayerTurn?"YOUR MOVE":"NPC ACTIVE"}</span></div>
+            {game.winner?<div className="winner-box"><div className="crest large">✦</div><h3>{game.winner===game.playerCountry?"VICTORY":"DEFEAT"}</h3><p>{game.winner} controls all ten nations.</p></div>:isPlayerTurn?<div className="command-content">
+              <p className="command-intro">Select an opposing nation to attack. You may launch one attack per turn, or skip and finish your turn.</p>
+              {!battle?<div className="attack-row"><div className="field"><label>ATTACK TARGET</label><select value={target} onChange={e=>setTarget(e.target.value)}><option value="">Choose an opposing nation</option>{game.countries.filter(c=>c.owner!==game.playerCountry).map(c=><option key={c.name} value={c.name}>{c.name} · {c.troops} troops</option>)}</select></div><button className="primary-btn attack-btn" disabled={!target||owned.every(c=>c.troops<2)} onClick={playerAttack}>DECLARE ATTACK ↗</button></div>:<div className="battle-box"><div className="battle-title"><span>⚔ BATTLE IN PROGRESS</span><b>{battle.attacker} <i>VS</i> {battle.defender}</b></div><p>Attack dice: up to {Math.min(battle.committed,(game.countries.find(c=>c.name===battle.attacker)?.troops??1)-1)} · Defender dice: up to 3</p><div className="battle-actions"><button className="primary-btn" onClick={resolveVolley}>ROLL NEXT VOLLEY</button><button className="secondary-btn" onClick={stopAttack}>STOP ATTACK</button></div>{game.countries.find(c=>c.name===battle.defender)?.troops===0&&<div className="conquest-choice"><label>MOVE TROOPS INTO CONQUERED TERRITORY</label><input type="range" min="1" max={Math.max(1,Math.min(game.countries.find(c=>c.name===battle.attacker)!.troops-1,Math.max(2,Math.floor(game.countries.find(c=>c.name===battle.defender)!.originalTroops/2))))} value={transfer} onChange={e=>setTransfer(Number(e.target.value))}/><p>{transfer} troop(s) will move</p><button className="primary-btn" onClick={completeConquest}>SECURE TERRITORY</button></div>}</div>}
+              {reinforcementDue>0&&<div className="reinforcement-box"><div><b>REINFORCEMENTS AVAILABLE</b><span>{reinforcementDue-totalAllocated} of {reinforcementDue} remaining to allocate</span></div>{owned.map(c=><label className="allocation" key={c.name}><span>{c.name} <small>({c.troops} troops)</small></span><input type="number" min="0" max={reinforcementDue} value={allocations[c.name]??0} onChange={e=>setAllocations({...allocations,[c.name]:Math.max(0,Number(e.target.value)||0)})}/></label>)}</div>}
+              <div className="turn-actions"><button className="primary-btn" disabled={!!battle||(reinforcementDue>0&&totalAllocated!==reinforcementDue)} onClick={finishPlayerTurn}>END TURN →</button><span>{game.round===1?"No reinforcements in round one.":`${reinforcementDue} reinforcements to allocate.`}</span></div>
+              <div className="transfer-box"><b>QUICK TROOP TRANSFER</b><div className="transfer-fields"><select id="transfer-from"><option value="">From territory</option>{owned.filter(c=>c.troops>1).map(c=><option key={c.name} value={c.name}>{c.name} ({c.troops})</option>)}</select><select id="transfer-to"><option value="">To territory</option>{owned.map(c=><option key={c.name} value={c.name}>{c.name}</option>)}</select><input id="transfer-amount" type="number" min="1" defaultValue="1"/></div><button className="secondary-btn" onClick={()=>{const f=(document.getElementById("transfer-from") as HTMLSelectElement).value;const t=(document.getElementById("transfer-to") as HTMLSelectElement).value;const n=Number((document.getElementById("transfer-amount") as HTMLInputElement).value);if(f&&t)transferTroops(f,t,n);}}>TRANSFER TROOPS</button><small>Source territory must retain at least one troop.</small></div>
+            </div>:<div className="npc-panel"><div className="npc-orb">AI</div><div><b>{currentName} is evaluating the board</b><p>The simulated commander will assess troop strength, compare vulnerable targets and decide whether to attack or reinforce.</p></div><button className="primary-btn" onClick={advanceNpc}>RESOLVE NPC TURN →</button><button className="secondary-btn" onClick={fastForward}>FAST-FORWARD NPCs »</button></div>}
+          </div>
+          <div className="panel" id="chronicle"><div className="panel-head"><div><small>CAMPAIGN RECORD</small><h2>Battle & decision chronicle</h2></div><span className="live-tag">{game.log.length} EVENTS</span></div><div className="chronicle">{game.log.map(item=><article key={item.id} className={`log-item ${item.kind}`}><div className="log-mark">{item.kind==="battle"?"⚔":item.kind==="npc"?"AI":item.kind==="good"?"✦":"·"}</div><div><b>{item.title}</b><p>{item.detail}</p></div></article>)}</div></div>
+        </div>
+        <aside className="side-column"><div className="panel"><div className="panel-head"><div><small>POWER BALANCE</small><h2>Nation standings</h2></div></div><div className="standings">{[...game.countries].sort((a,b)=>b.troops-a.troops).map(c=><div className="standing" key={c.name}><i style={{background:palette[game.turnOrder.indexOf(c.owner)%palette.length]}}/><div><b>{c.name}</b><small>{c.owner===game.playerCountry?"YOUR NATION":"NPC POWER"}</small></div><strong>{c.troops}</strong></div>)}</div></div><div className="panel rules-panel"><small>FIELD MANUAL</small><h2>Rules of engagement</h2><ul><li>Every territory keeps at least one troop.</li><li>Attack any opponent; geography does not restrict targets.</li><li>Dice are compared in pairs. Higher roll wins; ties cause no loss.</li><li>Round two onward: receive two troops per owned territory.</li><li>Conquest bonus is at least two troops or half the territory's original force.</li><li>Control all ten nations to win.</li></ul></div></aside>
+      </div>
+      {notice&&<div className="toast" onClick={()=>setNotice("")}>{notice}<button>×</button></div>}
+    </section>}
+    <footer><span>UNAM<span className="footer-italic">pire</span></span><span>ONE WORLD. TEN NATIONS. ONE EMPIRE.</span></footer>
+  </main>;
+}
