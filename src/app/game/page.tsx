@@ -248,6 +248,7 @@ export default function Home() {
   }
   function transferTroops(from:string,to:string,amount:number) {
     if(!game||!isPlayerTurn)return;
+    if(battle){setNotice("Finish or stop the current attack before transferring troops.");return;}
     const g=structuredClone(game) as Game;
     const a=g.countries.find(c=>c.name===from)!;const b=g.countries.find(c=>c.name===to)!;
     if(a.owner!==game.playerCountry||b.owner!==game.playerCountry||a.name===b.name||amount<1||a.troops-amount<1){setNotice("Transfer not possible. Both countries must be yours and the source must keep at least one troop.");return;}
