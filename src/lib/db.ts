@@ -127,7 +127,7 @@ export async function loadLatestGameForUser(userId: string) {
     .get();
 
   const games = snapshot.docs
-    .filter((doc) => doc.data().status === "in_progress")
+    .filter((doc) => doc.data().status !== "abandoned")
     .sort((a, b) =>
       (b.data().updatedAt?.toMillis?.() ?? 0) -
       (a.data().updatedAt?.toMillis?.() ?? 0)
