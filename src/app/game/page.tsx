@@ -182,26 +182,58 @@ export default function Home() {
     if(!holdings.length||!enemies.length){nextTurn(g);return;}
     const strongest=[...holdings].sort((a,b)=>b.troops-a.troops)[0];
     const weakest=[...enemies].sort((a,b)=>a.troops-b.troops)[0];
-    if(strongest.troops>=weakest.troops+2){
-      const loss=Math.min(weakest.troops,strongest.troops-1);
-      updateCountry(g,strongest.name,{troops:strongest.troops-loss});
-      const conquered=strongest.troops-loss>0 && Math.random()>.2;
-      if(conquered){
-        const bonus=Math.max(2,Math.floor(weakest.originalTroops/2));
-        const newTroops=Math.max(1,Math.min(bonus,loss));
-        updateCountry(g,weakest.name,{owner:npc,troops:newTroops});
-        pushLog(g,"NPC CONQUEST",`${npc} targets the weaker ${weakest.name} with its strongest territory, ${strongest.name}. The prototype's strategic simulation awards the territory and moves ${newTroops} troops.`, "npc");
-      } else {
-        updateCountry(g,weakest.name,{troops:Math.max(1,weakest.troops-1)});
-        pushLog(g,"NPC ATTACK",`${npc} probes ${weakest.name} from ${strongest.name}, but the attack does not secure the territory.`, "npc");
+    if(strongest.troops>=weakest.troops+2&&strongest.troops>=2){
+      g.attackUsed=true;
+      pushLog(g,"NPC STRATEGY",`${npc} identifies ${weakest.name} as the weakest opposing territory (${weakest.troops} troops) and attacks from ${strongest.name} (${strongest.troops} troops).`,"npc");
+      let source=g.countries.find(c=>c.name===strongest.name)!;
+      let defender=g.countries.find(c=>c.name===weakest.name)!;
+      let volleys=0;
+      while(source.troops>1&&defender.troops>0&&volleys<20){
+        const count=Math.min(source.troops-1,defender.troops);
+        const ad=Array.from({length:count},()=>1+Math.floor(Math.random()*6)).sort((a,b)=>b-a);
+        const dd=Array.from({length:count},()=>1+Math.floor(Math.random()*6)).sort((a,b)=>b-a);
+        let attackerLosses=0,defenderLosses=0;
+        const notes:string[]=[];
+        for(let i=0;i<count;i++){
+          if(ad[i]>dd[i]){defenderLosses++;notes.push(`attacker ${ad[i]} beats defender ${dd[i]}`);}
+          else if(ad[i]<dd[i]){attackerLosses++;notes.push(`defender ${dd[i]} beats attacker ${ad[i]}`);}
+          else notes.push(`both roll ${ad[i]}; tie`);
+        }
+        source={...source,troops:source.troops-attackerLosses};
+        defender={...defender,troops:defender.troops-defenderLosses};
+        updateCountry(g,source.name,{troops:source.troops});
+        updateCountry(g,defender.name,{troops:Math.max(0,defender.troops)});
+        const commentary=notes.join("; ");
+        const outcome=source.troops<=1?"attacker-exhausted":defender.troops<=0?"defender-defeated":"volley-resolved";
+        g.battleHistory=[...(g.battleHistory??[]),{id:`r${g.round}-npc-${g.battleHistory.length+1}`,round:g.round,attacker:source.name,defender:defender.name,attackerDice:ad,defenderDice:dd,attackerLosses,defenderLosses,outcome,commentary}].slice(-200);
+        pushLog(g,"NPC BATTLE VOLLEY",`${npc}: ${source.name} rolls [${ad.join(", ")}] against ${defender.name} [${dd.join(", ")}]. ${commentary}.`,"battle");
+        volleys++;
+        if(source.troops<=1){
+          updateCountry(g,defender.name,{troops:Math.max(1,defender.troops)});
+          pushLog(g,"NPC ATTACK ENDED",`${npc}'s attacking territory is reduced to one troop. ${defender.name} retains its territory.`,"npc");
+          break;
+        }
+        if(defender.troops<=0){
+          const bonus=Math.max(2,Math.floor(defender.originalTroops/2));
+          source={...source,troops:source.troops+bonus};
+          const moved=Math.min(bonus,source.troops-1);
+          updateCountry(g,source.name,{troops:source.troops-moved});
+          updateCountry(g,defender.name,{owner:npc,troops:Math.max(1,moved),alive:true});
+          pushLog(g,"NPC CONQUEST",`${npc} conquers ${defender.name}, receives ${bonus} additional troops and transfers ${moved} troops into the new territory.`,"npc");
+          break;
+        }
+        if(source.troops<=defender.troops){
+          pushLog(g,"NPC DECISION",`${npc} stops because its remaining force (${source.troops}) is not stronger than the defender (${defender.troops}).`,"npc");
+          break;
+        }
       }
-    } else {
+    }else{
       const weakestOwn=[...holdings].sort((a,b)=>a.troops-b.troops)[0];
       updateCountry(g,weakestOwn.name,{troops:weakestOwn.troops+1});
-      pushLog(g,"NPC DECISION",`${npc} avoids an unfavourable attack and reinforces ${weakestOwn.name} instead.`, "npc");
+      pushLog(g,"NPC DECISION",`${npc} avoids an unfavourable attack: strongest force ${strongest.troops}, weakest target ${weakest.troops}. It reinforces ${weakestOwn.name} instead.`,"npc");
     }
-    const aliveOwners=[...new Set(g.countries.filter(c=>c.alive).map(c=>c.owner))];
-    if(aliveOwners.length===1){g.winner=aliveOwners[0];pushLog(g,"VICTORY",`${g.winner} controls all ten nations.`,"good");}
+    const owners=[...new Set(g.countries.filter(c=>c.alive).map(c=>c.owner))];
+    if(owners.length===1){g.winner=owners[0];pushLog(g,"VICTORY",`${g.winner} controls all ten nations.`,"good");}
     else nextTurn(g);
   }
   function advanceNpc() {
