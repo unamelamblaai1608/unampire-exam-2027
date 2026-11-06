@@ -2,77 +2,117 @@
 
 **One world. Ten nations. One empire.**
 
-A playable single-player strategy-game prototype built with Next.js, TypeScript and React. It includes a country-selection screen, a world-map illustration, 10 nations per match, player turns, simulated NPC turns, troop reinforcements, troop transfers, dice-based battles, conquest bonuses, elimination and a browser save.
+UNAMpire is a single-player geopolitical strategy game built with Next.js 15, React, TypeScript, Clerk authentication and Firebase Firestore.
 
-## Run on Windows
+## Features
 
-1. Install Node.js (LTS) from https://nodejs.org if it is not already installed.
-2. Extract this ZIP.
-3. Open the **UNAMpire-Ready** folder in VS Code (the folder containing `package.json`).
-4. In VS Code, choose **Terminal → New Terminal**.
-5. Run these commands:
+- Choose one starting country; nine opponents are selected randomly.
+- Starting soldier counts are calculated from population tiers.
+- Random first turn and ten-country turn order.
+- Player turns and rule-based NPC decisions.
+- Pairwise six-sided dice combat, casualties, conquest and troop transfers.
+- Two reinforcement troops per owned territory from round two onward.
+- NPC fast-forward and a battle/decision chronicle.
+- Firestore game saving and restoration for signed-in users.
+- Clerk user identity associates each game with its owner.
+
+## Requirements
+
+- Node.js 20 or newer (LTS recommended).
+- A Clerk application.
+- A Firebase project with Cloud Firestore enabled.
+- A Firebase service account with Firestore read/write permission.
+
+## Local setup (Windows / VS Code)
+
+1. Clone this repository and open its root folder in VS Code (the folder containing `package.json`).
+2. Open **Terminal → New Terminal**.
+3. Install dependencies:
 
 ```powershell
 npm.cmd install
+```
+
+4. Create `.env.local` in the project root and add your own credentials:
+
+```env
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_REPLACE_WITH_YOUR_CLERK_PUBLISHABLE_KEY
+CLERK_SECRET_KEY=sk_test_REPLACE_WITH_YOUR_CLERK_SECRET_KEY
+FIREBASE_PROJECT_ID=your-firebase-project-id
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-firebase-project-id.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nREPLACE_WITH_YOUR_PRIVATE_KEY\n-----END PRIVATE KEY-----\n"
+```
+
+Never commit `.env.local`, private keys, service-account JSON files or secret keys. The repository's `.gitignore` excludes environment files.
+
+5. Start the development server:
+
+```powershell
 npm.cmd run dev
 ```
 
 6. Open http://localhost:3001.
 
-The development server uses port `3001` to avoid colliding with a production
-server, which uses Next.js's default port `3000`. If a UNAMpire server is
-already running, reuse its URL instead of starting another copy. Keep the
-terminal that started the server open while playing locally; press `Ctrl + C`
-in that terminal when you want to stop it.
+## Firebase setup
 
-## What's included
+1. In Firebase Console, select your project and enable **Firestore Database**.
+2. Open Project settings → Service accounts and generate a private key for a server-side service account.
+3. Put the project ID, service-account email and private key in the local environment variables above.
+4. In Vercel, add all three Firebase variables under **Project → Settings → Environment Variables**. Enable them for Production and redeploy after changing them.
+5. Keep Firebase Admin imports on the server only. Never expose the private key to browser code.
 
-- New game: choose a country; nine opponents are selected automatically.
-- Starting troops are assigned from population tiers.
-- Random first player.
-- Player attack, skip, transfer and troop-allocation actions.
-- Pairwise dice combat, losses, conquest and conquest bonus.
-- Two reinforcements per owned country from round two onward.
-- NPC turns with a short strategic explanation in the activity log.
-- Fast-forward NPC turns.
-- Browser save using localStorage; use **Reset game** to start again.
-- `public/database/countries.json`: country reference data used by the game.
-- `public/database/game-rules.json`: editable rules and population tiers.
+The application creates these Firestore collections when it first writes documents:
 
-## Important database and deployment note
+- `games`: game state, countries, ownership, soldiers, round, turn, status, battle history and ownerId.
+- `users`: Clerk user ID and last game reference.
+- `battles`: individual battle volleys, dice, casualties, outcome and commentary, linked by gameId.
 
-The `public/database` folder is a **JSON seed/reference database file**, included in this project. The playable prototype saves a match in the player's browser (`localStorage`), so it works without a database account. NPC turns are simulated locally and do not require an OpenAI API key.
+The `/api/games` API requires a signed-in Clerk user for cloud saves and loads. It checks the owner before allowing an existing game to be updated. Firebase Admin SDK bypasses Firestore Security Rules, so all Admin SDK access must remain server-side and the API ownership check must be preserved.
 
-A JSON file inside a Vercel deployment is not a writable shared database. It cannot safely store multiple players' games or provide shared spectator links. Before submitting a production multiplayer/shared-game version, connect MongoDB Atlas and move game saves/actions to server-side API routes. The `.env.example` file has placeholders for that future database connection and for Clerk authentication.
+## Clerk setup
 
-## Deploy to Vercel
+1. Create or open your Clerk application.
+2. Copy its publishable key and secret key into the environment variables.
+3. Ensure the keys belong to the same Clerk application and environment (both test or both live).
+4. Configure your production Vercel domain in Clerk.
+5. Configure sign-in and sign-up redirect URLs for `/sign-in` and `/sign-up`.
+6. Add the production environment variables in Vercel and redeploy.
 
-1. Create a GitHub repository and upload the contents of this folder (not the ZIP itself), then import the repository in Vercel using **Add New → Project**. Keep the default Next.js build settings.
-2. To enable Clerk sign-in and sign-up, add `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` under **Project Settings → Environment Variables** in Vercel. Use the values from your Clerk account; do not commit or upload `.env.local`.
-3. Add the configured Clerk sign-in and sign-up URLs and fallback redirect URLs as needed for your Clerk deployment. The local values are in `.env.local`; configure the production domain in Clerk and Vercel rather than copying local-only settings blindly.
-4. Deploy. The game stores each campaign in that browser's `localStorage`; it does not require MongoDB, but saves are not shared across browsers or users.
+## Build and test
 
-## Game rules in this prototype
+```powershell
+npm.cmd run build
+```
 
-- 10 countries take part in a match: the player's choice plus nine random opponents.
-- Geography does not restrict attacks.
-- A territory must always retain at least one troop.
-- An attack uses up to the smaller of the attacker's committed troops and defender's troops in dice.
-- Dice are compared pairwise; the higher die wins, and ties cause no loss.
-- A battle can be resolved volley by volley. The player may stop between volleys.
-- On conquest, the attacker chooses how many troops to move in. The conquest bonus is at least two, or half the conquered country's original starting troop value rounded down.
-- No reinforcements in round one. From round two, a player receives two troops per owned country at the start of their turn.
-- NPCs are simulated locally and provide an explanation in the activity feed. This is rule-based prototype AI, not a live OpenAI API integration.
+Before submission, test:
+
+1. The deployed home page loads.
+2. Registration and sign-in work.
+3. A signed-in user can start a game with exactly ten countries.
+4. Soldier counts match the population tiers.
+5. The player can attack once per turn and see dice, casualties and battle commentary.
+6. NPCs make and explain attack/reinforcement decisions.
+7. Conquest, reinforcements, transfers, elimination and victory work.
+8. A signed-in user's game saves to Firestore and restores after refreshing.
+9. A different signed-in user cannot update another user's game.
+
+## Important implementation notes
+
+- NPC behaviour is rule-based game AI, not a live LLM integration.
+- Browser storage is retained as a fallback, but it is not a shared cloud database.
+- Cloud persistence requires successful Clerk authentication and correctly configured Firebase Admin environment variables.
+- Do not describe a feature as verified until it has been tested in the deployed application.
 
 ## Project structure
 
 ```text
-UNAMpire-Ready/
-  public/database/countries.json
-  public/database/game-rules.json
-  src/app/globals.css
-  src/app/layout.tsx
-  src/app/page.tsx
-  README.md
-  package.json
+public/database/             Country reference data and game rules
+src/app/api/games/           Authenticated Firestore save/load API
+src/app/api/db-test/         Development-only database connection test
+src/app/game/                Game interface and gameplay logic
+src/app/sign-in/             Clerk sign-in page
+src/app/sign-up/             Clerk registration page
+src/lib/db.ts                Firestore persistence functions
+src/lib/firebase-admin.ts    Server-side Firebase Admin connection
+src/components/              Shared interface components
 ```
