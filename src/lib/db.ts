@@ -90,7 +90,7 @@ export async function saveGameForUser(
       userId,
       lastGameId: gameId,
       gamesCreated: userSnap.exists
-        ? (userSnap.data()?.gamesCreated ?? 0)
+        ? (userSnap.data()?.gamesCreated ?? 0) + (gameSnap.exists ? 0 : 1)
         : 1,
       createdAt: userSnap.exists
         ? userSnap.data()?.createdAt ?? now
