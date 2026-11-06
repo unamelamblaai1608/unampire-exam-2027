@@ -7,7 +7,9 @@ import WorldMap from "../../components/WorldMap";
 
 type Country = { name: string; population: number; owner: string; troops: number; originalTroops: number; alive: boolean };
 type LogItem = { id: number; title: string; detail: string; kind: "system" | "battle" | "npc" | "good" };
-type Game = { playerCountry: string; countries: Country[]; turnOrder: string[]; turnIndex: number; round: number; log: LogItem[]; winner: string | null; nextLogId: number };
+type BattleState = { attacker: string; defender: string; committed: number };
+type BattleRecord = { id: string; round: number; attacker: string; defender: string; attackerDice: number[]; defenderDice: number[]; attackerLosses: number; defenderLosses: number; outcome: string; commentary: string };
+type Game = { gameId?: string; playerCountry: string; countries: Country[]; turnOrder: string[]; turnIndex: number; round: number; log: LogItem[]; winner: string | null; nextLogId: number; attackUsed: boolean; battleHistory: BattleRecord[]; activeBattle: BattleState | null };
 const palette = ["#D5AE62","#5D9EBD","#A77BC6","#6EA88C","#D17E6D","#8D9BCB","#B7A36C","#68AEB0","#C17EAA","#9AAB74"];
 const populationTroops = (p:number) => p <= 5_000_000 ? 1 : p <= 10_000_000 ? 2 : p <= 25_000_000 ? 3 : p <= 50_000_000 ? 4 : p <= 75_000_000 ? 5 : p <= 100_000_000 ? 6 : p <= 125_000_000 ? 7 : p <= 150_000_000 ? 8 : 9;
 const fmt = (n:number) => new Intl.NumberFormat("en-US").format(n);
@@ -25,9 +27,29 @@ export default function Home() {
   const [speed,setSpeed]=useState(false);
   const [notice,setNotice]=useState("");
   const [saved,setSaved]=useState(false);
-
-  useEffect(()=>{try{const raw=localStorage.getItem("unampire-save");if(raw){setGame(JSON.parse(raw));setSaved(true)}}catch{}},[]);
-  useEffect(()=>{if(game) localStorage.setItem("unampire-save",JSON.stringify(game));},[game]);
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
+    let cancelled=false;
+    const restoreLocal=()=>{
+      try{const raw=localStorage.getItem("unampire-save");if(raw&&!cancelled){const local=JSON.parse(raw) as Game;setGame({...local,attackUsed:local.attackUsed??false,battleHistory:local.battleHistory??[],activeBattle:local.activeBattle??null});setBattle(local.activeBattle??null);setSaved(true);}}catch{}
+      if(!cancelled)setLoading(false);
+    };
+    fetch("/api/games",{cache:"no-store"}).then(async response=>{if(!response.ok)throw new Error("Cloud save unavailable");return response.json();}).then(data=>{
+      if(cancelled)return;
+      if(data?.game){const restored=data.game as Game;setGame({...restored,attackUsed:restored.attackUsed??false,battleHistory:restored.battleHistory??[],activeBattle:restored.activeBattle??null});setBattle(restored.activeBattle??null);setSaved(true);localStorage.setItem("unampire-save",JSON.stringify(restored));}
+      else restoreLocal();
+      setLoading(false);
+    }).catch(restoreLocal);
+    return ()=>{cancelled=true};
+  },[]);
+  useEffect(()=>{if(game)localStorage.setItem("unampire-save",JSON.stringify(game));},[game]);
+  useEffect(()=>{
+    if(!game?.gameId)return;
+    const timer=setTimeout(()=>{fetch("/api/games",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({gameId:game.gameId,game})}).then(async response=>{
+      if(!response.ok){const body=await response.json().catch(()=>({}));if(response.status===401)setNotice("Sign in to save this campaign to your account. A browser copy is still available.");else setNotice(body.error??"Cloud save failed. Your browser copy remains available.");}else setSaved(true);
+    }).catch(()=>setNotice("Could not reach Firestore. Your browser copy remains available."));},700);
+    return ()=>clearTimeout(timer);
+  },[game]);
 
   const currentName=game?.turnOrder[game.turnIndex] ?? "";
   const isPlayerTurn=!!game && currentName===game.playerCountry && !game.winner;
@@ -44,7 +66,7 @@ export default function Home() {
     const selectedCountries=[chosen,...others];
     const turnOrder=selectedCountries.map(c=>c.name).sort(()=>Math.random()-.5);
     const list:Country[]=selectedCountries.map((c,i)=>({name:c.name,population:c.population,owner:c.name,troops:populationTroops(c.population),originalTroops:populationTroops(c.population),alive:true}));
-    const g:Game={playerCountry:chosen.name,countries:list,turnOrder,turnIndex:0,round:1,log:[],winner:null,nextLogId:1};
+    const g:Game={gameId:crypto.randomUUID(),playerCountry:chosen.name,countries:list,turnOrder,turnIndex:0,round:1,log:[],winner:null,nextLogId:1,attackUsed:false,battleHistory:[],activeBattle:null};
     pushLog(g,"NEW CAMPAIGN","Ten nations enter the world theatre. The first commander has been selected at random.");
     pushLog(g,"YOUR NATION",`${chosen.name} begins with ${populationTroops(chosen.population)} troop(s). Your objective is to control all ten nations.`,"good");
     const first=turnOrder[0]; pushLog(g,"FIRST TURN",`${first} has been randomly selected to act first.`);
@@ -61,6 +83,7 @@ export default function Home() {
     while(tries<g.turnOrder.length && !g.countries.some(c=>c.owner===g.turnOrder[idx]&&c.alive)){idx=(idx+1)%g.turnOrder.length;tries++;}
     g.turnIndex=idx;g.round=round;
     const name=g.turnOrder[idx];
+    g.attackUsed=false;
     if(round>=2 && g.countries.some(c=>c.owner===name&&c.alive)){
       const bonus=g.countries.filter(c=>c.owner===name&&c.alive).length*2;
       pushLog(g,"REINFORCEMENTS",`${name} receives ${bonus} troops (${g.countries.filter(c=>c.owner===name&&c.alive).length} territories × 2).`,"good");
@@ -89,38 +112,44 @@ export default function Home() {
     const g=structuredClone(game) as Game;
     let a=g.countries.find(c=>c.name===battle.attacker)!;
     let d=g.countries.find(c=>c.name===battle.defender)!;
-    const attackDice=Math.min(battle.committed,a.troops-1);
-    const defendDice=Math.min(d.troops,3);
+    const diceCount=Math.min(battle.committed,a.troops-1,d.troops);
+    const attackDice=diceCount;
+    const defendDice=diceCount;
     const ad=Array.from({length:attackDice},()=>1+Math.floor(Math.random()*6)).sort((x,y)=>y-x);
     const dd=Array.from({length:defendDice},()=>1+Math.floor(Math.random()*6)).sort((x,y)=>y-x);
     let al=0,dl=0;const pairs=[];
     for(let i=0;i<Math.min(ad.length,dd.length);i++){if(ad[i]>dd[i]){dl++;pairs.push(`Attacker ${ad[i]} beats defender ${dd[i]}.`)}else if(ad[i]<dd[i]){al++;pairs.push(`Defender ${dd[i]} beats attacker ${ad[i]}.`)}else pairs.push(`Both roll ${ad[i]}: tie, no loss.`);}
     a={...a,troops:a.troops-al};d={...d,troops:d.troops-dl};
     updateCountry(g,a.name,{troops:a.troops});updateCountry(g,d.name,{troops:d.troops});
-    pushLog(g,"BATTLE VOLLEY",`${a.name} rolls [${ad.join(", ")}] against ${d.name} [${dd.join(", ")}]. ${pairs.join(" ")}`, "battle");
+    const commentary=pairs.join(" ");
+    g.battleHistory=[...(g.battleHistory??[]),{id:`r${g.round}-b${g.battleHistory.length+1}`,round:g.round,attacker:a.name,defender:d.name,attackerDice:ad,defenderDice:dd,attackerLosses:al,defenderLosses:dl,outcome:d.troops<=0?"defender-defeated":"volley-resolved",commentary}].slice(-200);
+    pushLog(g,"BATTLE VOLLEY",`${a.name} rolls [${ad.join(", ")}] against ${d.name} [${dd.join(", ")}]. ${commentary}`, "battle");
+    if(a.troops<=1){
+      updateCountry(g,d.name,{troops:Math.max(1,d.troops)});
+      pushLog(g,"ATTACK ENDED",`${a.name} has one troop remaining. The attack ends and ${d.name} retains its territory.`);
+      g.activeBattle=null;setBattle(null);setTarget("");setGame(g);setNotice("Your attack has ended because only one troop remains. The defender keeps the territory.");return;
+    }
     if(d.troops<=0){
       const bonus=Math.max(2,Math.floor(d.originalTroops/2));
+      updateCountry(g,a.name,{troops:a.troops+bonus});
       updateCountry(g,d.name,{owner:a.owner,troops:0,alive:true});
-      const attackerNow=g.countries.find(c=>c.name===a.name)!;
-      const available=Math.max(0,attackerNow.troops-1);
-      setBattle({attacker:a.name,defender:d.name,committed:Math.min(available,Math.max(1,bonus))});
-      pushLog(g,"TERRITORY CONQUERED",`${a.name} captures ${d.name}. Conquest bonus: ${bonus} troops. Choose how many troops to move into the new territory.`, "good");
+      const available=Math.max(1,a.troops+bonus-1);
+      const conquestBattle={attacker:a.name,defender:d.name,committed:available};
+      g.activeBattle=conquestBattle;setBattle(conquestBattle);
+      pushLog(g,"TERRITORY CONQUERED",`${a.name} captures ${d.name}. ${bonus} additional troops are awarded. Choose how many to transfer into the new territory.`, "good");
       setTransfer(Math.min(available,Math.max(1,bonus)));
-      setNotice(`Conquest! Choose troops to move into ${d.name}. The conquest bonus is ${bonus}.`);
+      setNotice(`Conquest! ${bonus} additional troops awarded. Choose how many to move into ${d.name}.`);
       setGame(g);return;
     }
-    if(a.troops<=1){
-      pushLog(g,"ATTACK ENDED",`${a.name} has only one troop remaining and cannot continue.`);
-      setBattle(null);setTarget("");setGame(g);return;
-    }
-    setBattle({...battle,committed:Math.min(battle.committed,a.troops-1)});
-    setGame(g);setNotice("Volley resolved. Continue the attack or stop here.");
+    const nextBattle={...battle,committed:Math.min(battle.committed,a.troops-1)};
+    g.activeBattle=nextBattle;setBattle(nextBattle);setGame(g);setNotice("Volley resolved. Continue the attack or stop here.");
   }
   function stopAttack() {
     if(!battle||!game)return;
     const g=structuredClone(game) as Game;
+    if(g.countries.find(c=>c.name===battle.defender)?.troops===0){setNotice("Secure the conquered territory before continuing.");return;}
     pushLog(g,"ATTACK STOPPED",`${battle.attacker} stops attacking ${battle.defender}.`);
-    setBattle(null);setTarget("");setGame(g);setNotice("Attack stopped. You may end your turn or transfer troops.");
+    g.activeBattle=null;setBattle(null);setTarget("");setGame(g);setNotice("Attack stopped. You may end your turn or transfer troops.");
   }
   function completeConquest() {
     if(!game||!battle)return;
@@ -128,22 +157,23 @@ export default function Home() {
     const a=g.countries.find(c=>c.name===battle.attacker)!;
     const d=g.countries.find(c=>c.name===battle.defender)!;
     const bonus=Math.max(2,Math.floor(d.originalTroops/2));
-    const move=Math.min(transfer,Math.max(0,a.troops-1),bonus);
+    const move=Math.min(transfer,Math.max(0,a.troops-1));
     updateCountry(g,a.name,{troops:a.troops-move});
     updateCountry(g,d.name,{owner:a.owner,troops:Math.max(1,move),alive:true});
     pushLog(g,"CONQUEST SECURED",`${move} troops move from ${a.name} into ${d.name}. ${a.owner} now controls ${g.countries.filter(c=>c.owner===a.owner).length} territories.`,"good");
-    setBattle(null);setTarget("");setGame(g);setNotice("Territory secured. You can end your turn when ready.");
+    g.activeBattle=null;setBattle(null);setTarget("");setGame(g);setNotice("Territory secured. You can end your turn when ready.");
     const owners=[...new Set(g.countries.map(c=>c.owner))];
     if(owners.length===1){g.winner=owners[0];pushLog(g,"VICTORY",`${owners[0]} controls the entire world theatre!`,"good");setGame(g);}
   }
   function playerAttack() {
     if(!game||!target||!isPlayerTurn)return;
+    if(game.attackUsed){setNotice("You have already used your one attack this turn.");return;}
     const from=game.countries.find(c=>c.owner===game.playerCountry&&c.troops>=2);
     const defender=game.countries.find(c=>c.name===target);
-    if(!from||!defender)return;
-    setBattle({attacker:from.name,defender:target,committed:Math.min(from.troops-1,3)});
-    setNotice(`Attack initiated from ${from.name} against ${target}.`);
-    const g=structuredClone(game) as Game;pushLog(g,"ATTACK DECLARED",`${from.name} launches an attack on ${target}.`,"battle");setGame(g);
+    if(!from||!defender||defender.owner===game.playerCountry)return;
+    const newBattle={attacker:from.name,defender:target,committed:from.troops-1};
+    setBattle(newBattle);setNotice(`Attack initiated from ${from.name} against ${target}.`);
+    const g=structuredClone(game) as Game;g.attackUsed=true;g.activeBattle=newBattle;pushLog(g,"ATTACK DECLARED",`${from.name} launches an attack on ${target}.`,"battle");setGame(g);
   }
   function npcTurn(g:Game) {
     const npc=g.turnOrder[g.turnIndex];
@@ -197,6 +227,8 @@ export default function Home() {
   const reinforcementDue=game&&isPlayerTurn&&game.round>=2?owned.length*2:0;
   const totalAllocated=Object.values(allocations).reduce((a,b)=>a+b,0);
 
+  if(loading)return <main className="app-shell"><SiteHeader/><section className="landing"><p className="lead">Loading your campaign…</p></section></main>;
+
   return <main className="app-shell">
     <SiteHeader />
     {!game ? <section className="landing">
@@ -233,7 +265,7 @@ export default function Home() {
           <div className="panel" id="command"><div className="panel-head"><div><small>YOUR COMMAND</small><h2>{game.winner?"Campaign concluded":isPlayerTurn?"Your turn":`${currentName}'s turn`}</h2></div><span className={`turn-chip ${isPlayerTurn?"your-turn":""}`}>{game.winner?"FINISHED":isPlayerTurn?"YOUR MOVE":"NPC ACTIVE"}</span></div>
             {game.winner?<div className="winner-box"><div className="crest large">✦</div><h3>{game.winner===game.playerCountry?"VICTORY":"DEFEAT"}</h3><p>{game.winner} controls all ten nations.</p></div>:isPlayerTurn?<div className="command-content">
               <p className="command-intro">Select an opposing nation to attack. You may launch one attack per turn, or skip and finish your turn.</p>
-              {!battle?<div className="attack-row"><div className="field"><label>ATTACK TARGET</label><select value={target} onChange={e=>setTarget(e.target.value)}><option value="">Choose an opposing nation</option>{game.countries.filter(c=>c.owner!==game.playerCountry).map(c=><option key={c.name} value={c.name}>{c.name} · {c.troops} troops</option>)}</select></div><button className="primary-btn attack-btn" disabled={!target||owned.every(c=>c.troops<2)} onClick={playerAttack}>DECLARE ATTACK ↗</button></div>:<div className="battle-box"><div className="battle-title"><span>⚔ BATTLE IN PROGRESS</span><b>{battle.attacker} <i>VS</i> {battle.defender}</b></div><p>Attack dice: up to {Math.min(battle.committed,(game.countries.find(c=>c.name===battle.attacker)?.troops??1)-1)} · Defender dice: up to 3</p><div className="battle-actions"><button className="primary-btn" onClick={resolveVolley}>ROLL NEXT VOLLEY</button><button className="secondary-btn" onClick={stopAttack}>STOP ATTACK</button></div>{game.countries.find(c=>c.name===battle.defender)?.troops===0&&<div className="conquest-choice"><label>MOVE TROOPS INTO CONQUERED TERRITORY</label><input type="range" min="1" max={Math.max(1,Math.min(game.countries.find(c=>c.name===battle.attacker)!.troops-1,Math.max(2,Math.floor(game.countries.find(c=>c.name===battle.defender)!.originalTroops/2))))} value={transfer} onChange={e=>setTransfer(Number(e.target.value))}/><p>{transfer} troop(s) will move</p><button className="primary-btn" onClick={completeConquest}>SECURE TERRITORY</button></div>}</div>}
+              {!battle?<div className="attack-row"><div className="field"><label>ATTACK TARGET</label><select value={target} onChange={e=>setTarget(e.target.value)}><option value="">Choose an opposing nation</option>{game.countries.filter(c=>c.owner!==game.playerCountry).map(c=><option key={c.name} value={c.name}>{c.name} · {c.troops} troops</option>)}</select></div><button className="primary-btn attack-btn" disabled={!target||game.attackUsed||owned.every(c=>c.troops<2)} onClick={playerAttack}>DECLARE ATTACK ↗</button></div>:<div className="battle-box"><div className="battle-title"><span>⚔ BATTLE IN PROGRESS</span><b>{battle.attacker} <i>VS</i> {battle.defender}</b></div><p>Dice per side: {Math.min(battle.committed,(game.countries.find(c=>c.name===battle.attacker)?.troops??1)-1,(game.countries.find(c=>c.name===battle.defender)?.troops??0))}</p><div className="battle-actions"><button className="primary-btn" onClick={resolveVolley}>ROLL NEXT VOLLEY</button><button className="secondary-btn" onClick={stopAttack}>STOP ATTACK</button></div>{game.countries.find(c=>c.name===battle.defender)?.troops===0&&<div className="conquest-choice"><label>MOVE TROOPS INTO CONQUERED TERRITORY</label><input type="range" min="1" max={Math.max(1,game.countries.find(c=>c.name===battle.attacker)!.troops-1)} value={transfer} onChange={e=>setTransfer(Number(e.target.value))}/><p>{transfer} troop(s) will move</p><button className="primary-btn" onClick={completeConquest}>SECURE TERRITORY</button></div>}</div>}
               {reinforcementDue>0&&<div className="reinforcement-box"><div><b>REINFORCEMENTS AVAILABLE</b><span>{reinforcementDue-totalAllocated} of {reinforcementDue} remaining to allocate</span></div>{owned.map(c=><label className="allocation" key={c.name}><span>{c.name} <small>({c.troops} troops)</small></span><input type="number" min="0" max={reinforcementDue} value={allocations[c.name]??0} onChange={e=>setAllocations({...allocations,[c.name]:Math.max(0,Number(e.target.value)||0)})}/></label>)}</div>}
               <div className="turn-actions"><button className="primary-btn" disabled={!!battle||(reinforcementDue>0&&totalAllocated!==reinforcementDue)} onClick={finishPlayerTurn}>END TURN →</button><span>{game.round===1?"No reinforcements in round one.":`${reinforcementDue} reinforcements to allocate.`}</span></div>
               <div className="transfer-box"><b>QUICK TROOP TRANSFER</b><div className="transfer-fields"><select id="transfer-from"><option value="">From territory</option>{owned.filter(c=>c.troops>1).map(c=><option key={c.name} value={c.name}>{c.name} ({c.troops})</option>)}</select><select id="transfer-to"><option value="">To territory</option>{owned.map(c=><option key={c.name} value={c.name}>{c.name}</option>)}</select><input id="transfer-amount" type="number" min="1" defaultValue="1"/></div><button className="secondary-btn" onClick={()=>{const f=(document.getElementById("transfer-from") as HTMLSelectElement).value;const t=(document.getElementById("transfer-to") as HTMLSelectElement).value;const n=Number((document.getElementById("transfer-amount") as HTMLInputElement).value);if(f&&t)transferTroops(f,t,n);}}>TRANSFER TROOPS</button><small>Source territory must retain at least one troop.</small></div>
