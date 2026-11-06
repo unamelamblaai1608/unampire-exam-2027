@@ -1,7 +1,17 @@
-node_modules
-.next
-out
+node_modules/
+.next/
+out/
+dist/
+.vercel/
+.DS_Store
+
+# Environment variables and secrets
 .env*
 !.env.example
-.vercel
-.DS_Store
+
+# TypeScript build files
+*.tsbuildinfo
+
+# Firebase credentials
+*service-account*.json
+serviceAccountKey.json
