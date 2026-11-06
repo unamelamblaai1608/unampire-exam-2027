@@ -97,6 +97,16 @@ function parseGame(raw: any, requestedStatus?: unknown): GameDocumentData | null
     }
   }
 
+  let activeBattle: GameDocumentData["activeBattle"] = null;
+  if (raw.activeBattle != null) {
+    const attacker = str(raw.activeBattle.attacker);
+    const defender = str(raw.activeBattle.defender);
+    const committed = int(raw.activeBattle.committed, 1, 100000);
+    if (!attacker || !defender || attacker === defender || committed === null ||
+        !names.includes(attacker) || !names.includes(defender)) return null;
+    activeBattle = { attacker, defender, committed };
+  }
+
   const winner = raw.winner == null ? null : str(raw.winner);
   if (raw.winner != null && !winner) return null;
   const resolvedStatus: GameStatus =
@@ -112,6 +122,7 @@ function parseGame(raw: any, requestedStatus?: unknown): GameDocumentData | null
     winner,
     turnOrder: turnOrder as string[],
     attackUsed: raw.attackUsed === true,
+    activeBattle,
     countries,
     log,
     battleHistory,
@@ -165,6 +176,7 @@ export async function GET() {
         winner: saved.winner,
         nextLogId: saved.nextLogId,
         attackUsed: saved.attackUsed ?? false,
+        activeBattle: saved.activeBattle ?? null,
         battleHistory: saved.battleHistory ?? [],
       },
     });
