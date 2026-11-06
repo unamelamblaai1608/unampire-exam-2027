@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useUser } from "@clerk/nextjs";
+import Link from "next/link";
 import countryData from "../../../public/database/countries.json";
 import SiteHeader from "../../components/SiteHeader";
 import WorldMap from "../../components/WorldMap";
@@ -17,6 +19,7 @@ const sample = <T,>(arr:T[], n:number) => [...arr].sort(()=>Math.random()-.5).sl
 const idFor = (s:string) => s.toLowerCase().replace(/[^a-z]/g,"");
 
 export default function Home() {
+  const { isLoaded: clerkLoaded, isSignedIn } = useUser();
   const [selected,setSelected]=useState("South Africa");
   const [game,setGame]=useState<Game|null>(null);
   const [target,setTarget]=useState("");
@@ -61,6 +64,7 @@ export default function Home() {
     g.log=[{id:g.nextLogId++,title,detail,kind},...g.log].slice(0,80);
   }
   function startGame() {
+    if(!clerkLoaded||!isSignedIn){setNotice("Please sign in or register before starting a campaign.");return;}
     const chosen=countryData.find(c=>c.name===selected) ?? countryData[0];
     const others=sample(countryData.filter(c=>c.name!==chosen.name),9);
     const selectedCountries=[chosen,...others];
@@ -98,6 +102,7 @@ export default function Home() {
     pushLog(g,"TURN BEGINS",`${name} is now active.`,name===g.playerCountry?"good":"npc");
   }
   function finishPlayerTurn() {
+    if(!isSignedIn){setNotice("Sign in to take turns.");return;}
     if(!game||!isPlayerTurn)return;
     const g=structuredClone(game) as Game;
     const total=Object.values(allocations).reduce((a,b)=>a+b,0);
@@ -108,6 +113,7 @@ export default function Home() {
     pushLog(g,"PLAYER TURN ENDED",`${g.playerCountry} has completed its turn.`);nextTurn(g);setGame(g);setTarget("");setNotice("");
   }
   function resolveVolley() {
+    if(!isSignedIn){setNotice("Sign in to resolve battles.");return;}
     if(!game||!battle)return;
     const g=structuredClone(game) as Game;
     let a=g.countries.find(c=>c.name===battle.attacker)!;
@@ -145,6 +151,7 @@ export default function Home() {
     g.activeBattle=nextBattle;setBattle(nextBattle);setGame(g);setNotice("Volley resolved. Continue the attack or stop here.");
   }
   function stopAttack() {
+    if(!isSignedIn){setNotice("Sign in to manage this battle.");return;}
     if(!battle||!game)return;
     const g=structuredClone(game) as Game;
     if(g.countries.find(c=>c.name===battle.defender)?.troops===0){setNotice("Secure the conquered territory before continuing.");return;}
@@ -152,6 +159,7 @@ export default function Home() {
     g.activeBattle=null;setBattle(null);setTarget("");setGame(g);setNotice("Attack stopped. You may end your turn or transfer troops.");
   }
   function completeConquest() {
+    if(!isSignedIn){setNotice("Sign in to secure this territory.");return;}
     if(!game||!battle)return;
     const g=structuredClone(game) as Game;
     const a=g.countries.find(c=>c.name===battle.attacker)!;
@@ -166,6 +174,7 @@ export default function Home() {
     if(owners.length===1){g.winner=owners[0];pushLog(g,"VICTORY",`${owners[0]} controls the entire world theatre!`,"good");setGame(g);}
   }
   function playerAttack() {
+    if(!isSignedIn){setNotice("Sign in to attack.");return;}
     if(!game||!target||!isPlayerTurn)return;
     if(game.attackUsed){setNotice("You have already used your one attack this turn.");return;}
     const from=game.countries.find(c=>c.owner===game.playerCountry&&c.troops>=2);
@@ -237,16 +246,19 @@ export default function Home() {
     else nextTurn(g);
   }
   function advanceNpc() {
+    if(!isSignedIn){setNotice("Sign in to take game turns.");return;}
     if(!game||isPlayerTurn||game.winner)return;
     const g=structuredClone(game) as Game;npcTurn(g);setGame(g);
   }
   function fastForward() {
+    if(!isSignedIn){setNotice("Sign in to take game turns.");return;}
     if(!game||game.winner)return;
     const g=structuredClone(game) as Game;let steps=0;
     while(g.turnOrder[g.turnIndex]!==g.playerCountry&&!g.winner&&steps<20){npcTurn(g);steps++;}
     setGame(g);setSpeed(false);setNotice(`Fast-forward complete: ${steps} NPC turn(s) simulated. Every decision is recorded in the activity feed.`);
   }
   function transferTroops(from:string,to:string,amount:number) {
+    if(!isSignedIn){setNotice("Sign in to transfer troops.");return;}
     if(!game||!isPlayerTurn)return;
     if(battle){setNotice("Finish or stop the current attack before transferring troops.");return;}
     const g=structuredClone(game) as Game;
@@ -260,10 +272,11 @@ export default function Home() {
   const reinforcementDue=game&&isPlayerTurn&&game.round>=2?owned.length*2:0;
   const totalAllocated=Object.values(allocations).reduce((a,b)=>a+b,0);
 
-  if(loading)return <main className="app-shell"><SiteHeader/><section className="landing"><p className="lead">Loading your campaign…</p></section></main>;
+  if(loading||!clerkLoaded)return <main className="app-shell"><SiteHeader/><section className="landing"><p className="lead">Loading your campaign…</p></section></main>;
 
   return <main className="app-shell">
     <SiteHeader />
+    {!isSignedIn&&<div className="toast" role="status">Visitor mode: you can view the game, but must <Link href="/sign-in">sign in</Link> or <Link href="/sign-up">register</Link> to play.</div>}
     {!game ? <section className="landing">
         <div className="hero-text">
       <div className="eyebrow">A GEOPOLITICAL STRATEGY EXPERIENCE</div>
@@ -278,7 +291,7 @@ export default function Home() {
           <div className="rule-line"><span>Starting troops</span><b>{populationTroops(countryData.find(c=>c.name===selected)?.population??0)}</b></div>
           <div className="rule-line"><span>Opposing nations</span><b>9</b></div>
           <div className="rule-line"><span>Victory condition</span><b>10 / 10</b></div>
-          <button className="primary-btn" onClick={startGame}>ESTABLISH CAMPAIGN <span>↗</span></button>
+          <button className="primary-btn" onClick={startGame} disabled={!isSignedIn}>ESTABLISH CAMPAIGN <span>↗</span></button>
           {saved&&<button className="secondary-btn" onClick={()=>setNotice("Your previous campaign is saved in this browser. Start a new campaign to replace it.")}>Previous local save detected</button>}
           <p className="fine-print">A new campaign replaces the current browser save.</p>
         </div>
