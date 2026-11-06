@@ -267,7 +267,7 @@ export default function Home() {
     updateCountry(g,a.name,{troops:a.troops-amount});updateCountry(g,b.name,{troops:b.troops+amount});
     pushLog(g,"TROOPS TRANSFERRED",`${amount} troops move from ${from} to ${to}.`,"good");setGame(g);setNotice("Troop transfer completed.");
   }
-  function reset() {if(confirm("Delete this saved campaign and return to the title screen?")){localStorage.removeItem("unampire-save");setGame(null);setBattle(null);setNotice("");setSaved(false);}}
+  function reset() {if(!isSignedIn){setNotice("Sign in to manage this campaign.");return;}if(confirm("Delete this saved campaign and return to the title screen?")){if(game?.gameId)fetch("/api/games",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({gameId:game.gameId,game,status:"abandoned"})}).catch(()=>{});localStorage.removeItem("unampire-save");setGame(null);setBattle(null);setNotice("");setSaved(false);}}
   const currentTroops=game?.countries.find(c=>c.name===currentName)?.troops??0;
   const reinforcementDue=game&&isPlayerTurn&&game.round>=2?owned.length*2:0;
   const totalAllocated=Object.values(allocations).reduce((a,b)=>a+b,0);
