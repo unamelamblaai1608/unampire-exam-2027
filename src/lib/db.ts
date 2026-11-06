@@ -42,6 +42,7 @@ export type GameDocumentData = {
   winner: string | null;
   turnOrder: string[];
   attackUsed: boolean;
+  activeBattle: { attacker: string; defender: string; committed: number } | null;
   countries: {
     name: string;
     owner: string;
